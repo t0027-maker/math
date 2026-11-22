@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>算式拼圖</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eff5ef;color:#15342b;font:17px/1.55 system-ui,"Microsoft JhengHei",sans-serif}main{max-width:1080px;margin:auto;padding:26px 20px 48px}header{display:flex;justify-content:space-between;align-items:center;gap:16px}h1{font-size:clamp(32px,6vw,58px);letter-spacing:-.06em;margin:0}h2{margin:0;font-size:clamp(22px,4vw,30px)}p{margin:.5em 0}nav,.actions,.pieces,.equation{display:flex;flex-wrap:wrap;gap:10px;align-items:center}nav{margin:22px 0 14px}.panel{background:#fff;border:1px solid #d8e5da;border-radius:24px;padding:clamp(15px,4vw,35px);box-shadow:0 12px 34px #163f2710}.layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(245px,.65fr);gap:25px}.board{background:#f6f9f5;border:1px solid #dae7db;border-radius:16px;padding:17px;margin:18px 0}button,input{font:inherit;border-radius:10px;border:1px solid #a9bcae;padding:9px 13px;color:inherit;background:white}button{cursor:pointer;font-weight:700}button:hover:not(:disabled){filter:brightness(.95)}button:disabled{opacity:.48;cursor:default}button:focus-visible,input:focus-visible{outline:3px solid #146cba;outline-offset:3px}button[aria-pressed=true],.primary{background:#1a5743;color:white;border-color:#1a5743}.tile,.slot,.fixed{min-width:64px;min-height:57px;text-align:center;font-size:24px;font-weight:800}.fixed{padding:9px;background:#e1eadf;border-radius:10px}.tile{cursor:grab;touch-action:none;user-select:none;border:2px solid #3a8670;background:#c9efdf;box-shadow:0 4px #31816a}.negative{background:#ffe5c4;border-color:#b46a25;box-shadow:0 4px #b46a25}.selected,.hover{outline:3px dashed #146cba;outline-offset:3px}.slot{border:2px dashed #699585;background:#fff;color:#245848}.filled{border-style:solid;background:#c9efdf}.ghost{position:fixed;z-index:20;pointer-events:none;transform:translate(-50%,-50%);margin:0}aside{border-radius:17px;background:#173b31;color:#fff;padding:20px;align-self:start}aside h3{margin:0}.muted,small{color:#4c665c}aside small{color:#cce7d9}.math{font-size:clamp(20px,4vw,32px);font-weight:800;font-variant-numeric:tabular-nums}.grid{display:grid;gap:3px;margin:12px 0 7px;width:max-content;max-width:100%}.cell{width:clamp(11px,2.3vw,23px);aspect-ratio:1;border-radius:3px;background:#8ee5bb}.split{background:#f5cf76}.removed{background:transparent;border:1px dashed #f5cf76}.legend{font-size:14px}.feedback{min-height:2.5em;font-weight:700;margin:12px 0;color:#245848}.error{color:#984210}.answer{width:105px}.complete{background:#e9f8ee}.badge{background:#dcecdf;border-radius:99px;padding:7px 14px;white-space:nowrap;font-size:14px;font-weight:700}@media(max-width:740px){.layout{grid-template-columns:1fr}.tile,.slot,.fixed{min-width:48px;font-size:21px}.panel{padding:16px}}@media(max-width:370px){.badge{white-space:normal}.equation{gap:5px}.tile,.slot,.fixed{min-width:40px;padding-inline:6px}}
+</style>
+<main><header><h1>算式拼圖</h1><span class="badge" id="score"></span></header>
+<nav aria-label="練習類型"><button data-mode="reorder">加減換位</button><button data-mode="multiply">乘除換位</button><button data-mode="chain">連除合併</button><button data-mode="roundAdd">加法補差</button><button data-mode="roundSub">減法補差</button><button data-mode="plus">乘法分配・加</button><button data-mode="minus">乘法分配・減</button></nav>
+<section class="panel"><div class="layout"><div id="play"></div><aside id="visual"></aside></div>
+<div id="feedback" class="feedback" role="status"></div>
+<div class="actions"><button id="hint">提示</button><button id="reset">重排本題</button><button id="next" class="primary">下一題</button></div></section></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const play=$('play'), visual=$('visual'), feedback=$('feedback');
+const seen={reorder:0,multiply:0,chain:0,roundAdd:0,roundSub:0,plus:0,minus:0};
+const rand=(min,max)=>min+Math.floor(Math.random()*(max-min+1));
+let mode='reorder', completed=0, counted=false, question, pieces, fills, selected, solved, ready, drag;
+const swaps=()=>mode==='reorder'||mode==='multiply';
+const rounding=()=>mode==='roundAdd'||mode==='roundSub';
+function roundEquation(rewritten){
+  const {base,terms}=question;
+  const minus=mode==='roundSub';
+  return [String(base??''),...terms.map(({hundred,gap},index)=>{
+    const prefix=minus?' − ':index?' + ':'';
+    return prefix+(rewritten&&fills[index]!==null
+      ?hundred+' '+fills[index]+' '+gap
+      :hundred-gap);
+  })].join('');
+}
+function roundBoard(){
+  return '<div class="equation">'+question.terms.map(({hundred,gap},index)=>
+    fills[index]===null?tile(hundred-gap,'round'+index,mode==='roundSub'):
+    '<span class="fixed">'+hundred+' '+fills[index]+' '+gap+'</span>').join('')+
+    '</div><p>移到對應的補差格</p><div class="pieces">'+
+    '<button class="slot" data-round-sign="＋">補回差額 ＋</button>'+
+    '<button class="slot" data-round-sign="−">扣掉差額 −</button></div>'+
+    '<p class="math" aria-live="polite">'+roundEquation(true)+'</p>';
+}
+function newQuestion(){
+  const first=seen[mode]++===0;
+  if(rounding()){
+    const minus=mode==='roundSub';
+    const examples=minus?[100,200]:[200,300,100];
+    question={base:minus?(first?1000:rand(6,10)*100):null,terms:examples.map((hundred,index)=>({
+      hundred:first?hundred:rand(1,minus?3:5)*100,
+      gap:first?(index===2?2:1):rand(1,9)
+    }))};
+  }else if(mode==='chain'){
+    const b=first?2:rand(2,10), c=first?3:rand(2,10);
+    question={a:b*c*(first?20:rand(3,20)),b,c};
+  }else if(mode==='multiply'){
+    const c=first?8:rand(2,12);
+    question={a:c*(first?12:rand(3,18)),b:first?5:rand(2,12),c};
+  }else if(mode==='reorder'){
+    const subtract=first?48:rand(12,79);
+    const base=first?100:rand(1,5)*100;
+    question={a:base+subtract,b:first?23:rand(11,89),c:subtract};
+  }else{
+    question=first?(mode==='plus'?{a:6,b:7,c:3}:{a:8,b:10,c:2}):{a:rand(2,9),b:mode==='plus'?rand(4,9):10,c:rand(2,5)};
+  }
+  counted=false;
+  reset();
+}
+function reset(){
+  pieces=['plus','minus']; fills=rounding()?question.terms.map(()=>null):[null,null]; selected=null; solved=false; ready=false;
+  render(); say('');
+}
+function say(message,error=false){
+  feedback.textContent=message;
+  feedback.classList.toggle('error',error);
+}
+function tile(text,id,negative=false){
+  return '<button class="tile '+(negative?'negative ':'')+(id===selected?'selected':'')+'" data-piece="'+id+'" aria-pressed="'+(id===selected)+'">'+text+'</button>';
+}
+function slot(index){
+  return '<button class="slot '+(fills[index]!==null?'filled':'')+'" data-slot="'+index+'" aria-label="第 '+(index+1)+' 個乘數空格">'+(fills[index]??'？')+'</button>';
+}
+function render(){
+  const {a,b,c}=question;
+  const chain=mode==='chain', reorder=swaps(), multiply=mode==='multiply', add=multiply?'×':'＋', subtract=multiply?'÷':'−', sign=mode==='minus'?'−':'+';
+  document.querySelectorAll('[data-mode]').forEach(button=>button.setAttribute('aria-pressed',button.dataset.mode===mode));
+  $('score').textContent='已完成 '+completed+' 題';
+  let board;
+  if(rounding()){
+    board=roundBoard();
+  }else if(chain){
+    board='<div class="equation"><span class="fixed">'+a+'</span>'+
+      (ready?'<span class="fixed">÷ ('+b+' × '+c+')</span>':tile('÷'+b,'plus')+tile('÷'+c,'minus',true))+'</div>';
+  }else if(reorder){
+    board='<div class="equation"><span class="fixed">'+a+'</span>'+pieces.map(id=>id==='plus'?tile(add+b,id):tile(subtract+c,id,true)).join('')+'</div>';
+  }else{
+    board='<div class="pieces" aria-label="可用拼圖">'+[0,1].filter(i=>fills[i]===null).map(i=>tile(a,'factor'+i)).join('')+'</div>'+
+      '<div class="equation math">'+slot(0)+'<span>× '+b+' '+sign+'</span>'+slot(1)+'<span>× '+c+'</span></div>';
+  }
+  play.innerHTML='<h2>'+(rounding()?'湊整百，再補差':chain?'把兩次除法合成一次':reorder?(multiply?'移一移，先除再乘':'移一移，湊整百'):'把乘數分給括號裡的兩項')+'</h2><p class="math">'+
+    (rounding()?roundEquation(false):chain?a+' ÷ '+b+' ÷ '+c:reorder?a+' '+add+' '+b+' '+subtract+' '+c:a+' × ('+b+' '+sign+' '+c+')')+'</p><p class="muted">'+
+    (rounding()?'拖曳數字到「補回」或「扣掉」，也可以先點數字，再點補差格。':chain?'把一塊除法拼圖拖到另一塊上，或依序點兩塊。':reorder?'拖曳拼圖交換位置，或依序點兩塊。運算符號和數字一起搬。':'把兩塊乘數拼圖各放進一個空格。也可以先點拼圖，再點空格。')+
+    '</p><div class="board '+(solved?'complete':'')+'">'+board+'</div>'+
+    '<form id="answerForm" class="actions"><label for="answer">最後答案</label><input class="answer" id="answer" inputmode="numeric" type="number" step="1" required '+(!ready||solved?'disabled':'')+'><button class="primary" '+(!ready||solved?'disabled':'')+'>檢查</button></form>';
+  $('answerForm').onsubmit=check;
+  if(solved)$('answer').value=result();
+  if(rounding()){
+    const minus=mode==='roundSub';
+    const rounded=(question.base??0)+question.terms.reduce((sum,term)=>sum+(minus?-term.hundred:term.hundred),0);
+    const gap=question.terms.reduce((sum,term)=>sum+term.gap,0);
+    visual.innerHTML='<h3>整百和差額分開算</h3><p>'+
+      (minus?'改成減整百時，多減了幾個就加回幾個。':'改成加整百時，多加了幾個就扣掉幾個。')+'</p>'+
+      (ready?'<p>整百先算，得到 '+rounded+'。<br>差額合計 '+gap+'。</p><p class="math">'+rounded+(minus?' ＋ ':' − ')+gap+'</p>':'');
+  }else if(chain){
+    visual.innerHTML='<h3>每組有幾個？</h3><p>每 '+b+' 個分成一小組，每 '+c+' 小組再合成一大組。</p>'+
+      (ready?'<p class="math">'+b+' × '+c+' = '+b*c+'</p><small>每大組有 '+b*c+' 個。用 '+a+' 除以 '+b*c+'，就知道有幾大組。</small>':
+      '<small>合併後，看看每一大組有幾個。</small>');
+  }else if(reorder){
+    visual.innerHTML='<h3>同一個起點</h3><p class="math">'+a+(pieces[0]==='minus'?' '+subtract+' '+c+' = '+(multiply?a/c:a-c):' '+add+' '+b+' = '+(multiply?a*b:a+b))+
+      '</p><small>'+(ready?(multiply?'先除得 '+a/c+'，再乘 '+b+'。':'先減出整百，再加 '+b+'。'):'看看現在先算哪一塊。')+'</small>';
+  }else{
+    const cols=mode==='minus'?b:b+c;
+    const cells=Array.from({length:a*cols},(_,i)=>{
+      const col=i%cols;
+      const type=mode==='minus'?(col>=b-c?'removed':''):(col>=b?'split':'');
+      return '<span class="cell '+type+'"></span>';
+    }).join('');
+    visual.innerHTML='<h3>用方格看分配</h3><p>共有 '+a+' 排，每排 '+(mode==='minus'?b+' 格，拿掉 '+c+' 格':b+' 格綠色和 '+c+' 格黃色')+'。</p>'+
+      '<div class="grid" aria-hidden="true" style="grid-template-columns:repeat('+cols+',1fr)">'+cells+'</div><small class="legend">'+
+      (mode==='minus'?'虛線格是每排拿掉的部分。':'每一排都分成綠、黃兩段。')+'</small>'+
+      (ready?'<p>'+a+' × '+b+' = '+a*b+'<br>'+a+' × '+c+' = '+a*c+'</p>':'');
+  }
+}
+function result(){
+  if(rounding())return question.terms.reduce((sum,{hundred,gap})=>sum+(mode==='roundSub'?-1:1)*(hundred-gap),question.base??0);
+  const {a,b,c}=question;
+  if(mode==='reorder')return a+b-c;
+  if(mode==='chain')return a/(b*c);
+  if(mode==='multiply')return a/c*b;
+  return a*(mode==='minus'?b-c:b+c);
+}
+function place(id,target){
+  if(solved||!id||!target)return;
+  if(rounding()){
+    const index=Number(id.slice(5)), sign=target.dataset.roundSign;
+    if(!id.startsWith('round')||fills[index]!==null||!sign)return;
+    if(sign!==(mode==='roundSub'?'＋':'−')){
+      say(mode==='roundSub'?'減整百時減多了，想想要怎麼把差額補回來。':'加整百時加多了，想想要怎麼扣掉差額。',true);
+      return;
+    }
+    fills[index]=sign;
+    ready=fills.every(value=>value!==null);
+  }else if(mode==='chain'){
+    if(ready||!target.dataset.piece||target.dataset.piece===id)return;
+    ready=true;
+  }else if(swaps()){
+    if(!target.dataset.piece||target.dataset.piece===id)return;
+    pieces.reverse();
+    ready=pieces[0]==='minus';
+  }else{
+    if(target.dataset.slot===undefined||fills[target.dataset.slot]!==null)return;
+    fills[target.dataset.slot]=question.a;
+    ready=fills.every(value=>value!==null);
+  }
+  selected=null;
+  render();
+  if(ready) $('answer').focus();
+  else play.querySelector('[data-piece]')?.focus();
+  say(ready?'拼好了！算算看最後的答案。':mode==='multiply'?'現在先做乘法。再試著把除法移到前面。':mode==='reorder'?'現在先做加法。再試著把減法移到前面。':rounding()?'再處理下一塊數字。':'再填另一個空格。');
+}
+play.addEventListener('click',event=>{
+  if(solved)return;
+  const button=event.target.closest('[data-piece],[data-slot],[data-round-sign]');
+  if(!button)return;
+  const id=button.dataset.piece;
+  if(button.dataset.roundSign!==undefined||button.dataset.slot!==undefined||((swaps()||mode==='chain')&&selected&&id!==selected)){
+    place(selected,button);return;
+  }
+  selected=selected===id?null:id;
+  render();
+  if(id)play.querySelector('[data-piece="'+id+'"]')?.focus();
+});
+play.addEventListener('pointerdown',event=>{
+  const button=event.target.closest('[data-piece]');
+  if(!button||solved||event.button!==0)return;
+  drag={button,id:button.dataset.piece,x:event.clientX,y:event.clientY,pointer:event.pointerId};
+});
+function dropTarget(event){
+  return document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-piece],[data-slot],[data-round-sign]');
+}
+window.addEventListener('pointermove',event=>{
+  if(!drag||event.pointerId!==drag.pointer)return;
+  if(!drag.ghost&&Math.hypot(event.clientX-drag.x,event.clientY-drag.y)<8)return;
+  if(!drag.ghost){
+    drag.ghost=drag.button.cloneNode(true);
+    drag.ghost.classList.add('ghost');
+    drag.ghost.setAttribute('aria-hidden','true');
+    drag.ghost.tabIndex=-1;
+    document.body.append(drag.ghost);
+  }
+  drag.ghost.style.left=event.clientX+'px';
+  drag.ghost.style.top=event.clientY+'px';
+  drag.hover?.classList.remove('hover');
+  drag.hover=dropTarget(event);
+  drag.hover?.classList.add('hover');
+});
+function clearDrag(){
+  drag?.hover?.classList.remove('hover');
+  drag?.ghost?.remove();
+  drag=null;
+}
+window.addEventListener('pointerup',event=>{
+  if(!drag||event.pointerId!==drag.pointer)return;
+  const {ghost,id}=drag;
+  const target=ghost?dropTarget(event):null;
+  clearDrag();
+  if(ghost)place(id,target);
+});
+window.addEventListener('pointercancel',clearDrag);
+window.addEventListener('blur',clearDrag);
+function check(event){
+  event.preventDefault();
+  if(!ready||solved)return;
+  if($('answer').valueAsNumber!==result()){
+    say('再算一次，右邊有中間步驟。',true);
+    $('answer').select();return;
+  }
+  solved=true;
+  if(!counted){completed++; counted=true;}
+  render();
+  const {a,b,c}=question;
+  say(rounding()?'答對了！'+roundEquation(false)+' = '+roundEquation(true)+' = '+result()+'。':mode==='chain'?'答對了！'+a+' ÷ '+b+' ÷ '+c+' = '+a+' ÷ ('+b+' × '+c+') = '+a+' ÷ '+b*c+' = '+result()+'。':mode==='multiply'?'答對了！'+a+' × '+b+' ÷ '+c+' = '+a+' ÷ '+c+' × '+b+' = '+result()+'。除數 '+c+' 仍然是除數。':mode==='reorder'?'答對了！換位時把「＋'+b+'」和「−'+c+'」整塊移動，結果都是 '+result()+'。':
+    '答對了！'+a+' × '+b+(mode==='minus'?' − ':' + ')+a+' × '+c+' = '+result()+'。');
+  $('next').focus();
+}
+document.querySelector('nav').onclick=event=>{
+  const nextMode=event.target.dataset.mode;
+  if(!nextMode||nextMode===mode)return;
+  mode=nextMode;newQuestion();
+};
+$('hint').onclick=()=>{
+  const {a,b,c}=question;
+  say(rounding()?(mode==='roundSub'?'例如減 99，先減 100，再加回 1。':'例如加 199，先加 200，再扣掉 1。'):mode==='chain'?'把兩塊除法拼圖疊在一起。先算括號裡的 '+b+' × '+c+'，再用 '+a+' 除以這個乘積。':mode==='multiply'?'把「÷'+c+'」移到「×'+b+'」前面。'+a+' 可以整除 '+c+'，所以先除得 '+a/c+'，再乘 '+b+'。':mode==='reorder'?'「−'+c+'」移到「＋'+b+'」前面，'+a+' − '+c+' 就是 '+(a-c)+'。':
+    '括號外的 '+a+' 要分別乘 '+b+' 和 '+c+'，中間保留原來的'+(mode==='minus'?'減':'加')+'號。');
+};
+$('reset').onclick=reset;
+$('next').onclick=newQuestion;
+newQuestion();
+</script></html>
+
+
+
